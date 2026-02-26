@@ -1,14 +1,17 @@
-# Используем легкую версию Python
 FROM python:3.10-slim
 
-# Устанавливаем рабочую директорию
+# Установка системных зависимостей
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
-# Копируем файлы проекта
 COPY . .
 
-# Устанавливаем зависимости
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Команда для запуска
+# Открываем порт для Flask
+EXPOSE 8080
+
 CMD ["python", "main.py"]
