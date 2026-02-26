@@ -7,63 +7,91 @@ from threading import Thread
 from flask import Flask
 from deep_translator import GoogleTranslator
 
-# --- ВЕБ-СЕРВЕР ---
+# --- ВЕБ-СЕРВЕР ДЛЯ RENDER (чтобы не засыпал) ---
 app = Flask('')
 @app.route('/')
-def home(): return "Kevin V3.1 is Online"
+def home(): 
+    return "Третий Бот: Статус LIVE"
 
 def run_web_server():
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
-# --- НАСТРОЙКИ ---
+# --- НАСТРОЙКИ БОТА ---
 TOKEN = os.getenv("BOT_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
 bot = telebot.TeleBot(TOKEN)
 
-# Быстрая модель SDXL-Lightning
-API_URL = "https://api-inference.huggingface.co/models/ByteDance/SDXL-Lightning-4step"
+# ВАРИАНТ А: Самая стабильная база SDXL
+API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
 headers = {"Authorization": f"Bearer {HF_TOKEN}"}
 
-@bot.message_handler(commands=['start'])
+@bot.message_handler(commands=['start', 'help'])
 def start(message):
-    bot.reply_to(message, "🤖 **Кевин V3.1 (с переводчиком)!**\nПиши на русском или английском: `/draw космонавт на лошади`", parse_mode='Markdown')
+    welcome_text = (
+        "👋 **Я твой Третий Бот!**\n\n"
+        "Я рисую картинки по твоему описанию.\n"
+        "Можешь писать на **русском** — я сам переведу.\n\n"
+        "Команда: `/draw ваш запрос`"
+    )
+    bot.reply_to(message, welcome_text, parse_mode='Markdown')
 
 @bot.message_handler(commands=['draw'])
 def draw(message):
+    # Убираем команду /draw из текста
     user_prompt = message.text.replace('/draw', '').strip()
+    
     if not user_prompt:
-        bot.reply_to(message, "⚠️ Опиши картинку!")
+        bot.reply_to(message, "⚠️ Пожалуйста, напиши описание после команды /draw\nПример: `/draw рыжий кот в очках`", parse_mode='Markdown')
         return
 
-    msg = bot.reply_to(message, "⚙️ Перевожу и готовлю холст...")
+    # Информируем пользователя о начале работы
+    msg = bot.reply_to(message, "⚙️ Обрабатываю запрос...")
 
     try:
-        # 1. АВТОПЕРЕВОД на английский
-        translated_prompt = GoogleTranslator(source='auto', target='en').translate(user_prompt)
-        bot.edit_message_text(f"🎨 Рисую: _{translated_prompt}_", message.chat.id, msg.message_id, parse_mode='Markdown')
+        # 1. АВТОПЕРЕВОД (с любого языка на английский)
+        translated = GoogleTranslator(source='auto', target='en').translate(user_prompt)
+        bot.edit_message_text(f"🎨 **Перевод:** _{translated}_\n⏳ Генерирую картинку...", 
+                              message.chat.id, msg.message_id, parse_mode='Markdown')
+
+        # 2. ПОДГОТОВКА ДАННЫХ ДЛЯ ИИ
+        payload = {
+            "inputs": translated,
+            "options": {"wait_for_model": True} # Ждать, если модель не загружена
+        }
         
-        # 2. ГЕНЕРАЦИЯ
-        for attempt in range(3):
-            # Добавляем случайный шум в запрос для уникальности
-            payload = {"inputs": f"{translated_prompt}, seed={random.randint(1,1000)}"}
-            response = requests.post(API_URL, headers=headers, json=payload, timeout=60)
-            
-            if response.status_code == 200:
-                bot.send_photo(message.chat.id, response.content, caption=f"✨ Готово!\n📝 Запрос: {user_prompt}")
-                bot.delete_message(message.chat.id, msg.message_id)
-                return
-            
-            elif response.status_code == 503:
-                time.sleep(10) # Подождем прогрева
-                continue
-            
-            else:
-                bot.edit_message_text(f"❌ Ошибка ИИ ({response.status_code}). Попробуй еще раз.", message.chat.id, msg.message_id)
-                return
+        # 3. ЗАПРОС К HUGGING FACE
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=90)
+        
+        if response.status_code == 200:
+            # Если всё успешно, отправляем фото
+            bot.send_photo(
+                message.chat.id, 
+                response.content, 
+                caption=f"✅ **Готово!**\n📝 Запрос: {user_prompt}",
+                parse_mode='Markdown'
+            )
+            bot.delete_message(message.chat.id, msg.message_id)
+        
+        elif response.status_code == 503:
+            # Если модель только просыпается
+            bot.edit_message_text("⌛ Модель прогревается на сервере. Попробуй повторить через 20-30 секунд.", 
+                                  message.chat.id, msg.message_id)
+        
+        else:
+            # Другие ошибки (например, 410, 401 и т.д.)
+            bot.edit_message_text(f"❌ Ошибка ИИ (Код: {response.status_code}).\nПопробуй изменить запрос или повторить позже.", 
+                                  message.chat.id, msg.message_id)
 
     except Exception as e:
+        print(f"Ошибка в блоке draw: {e}")
         bot.edit_message_text(f"❌ Произошла ошибка: {e}", message.chat.id, msg.message_id)
 
+# --- ЗАПУСК ВСЕЙ СИСТЕМЫ ---
 if __name__ == "__main__":
+    # Запуск Flask в отдельном потоке
     Thread(target=run_web_server).start()
+    
+    print("--- ТРЕТИЙ БОТ ЗАПУЩЕН ---")
+    # Infinity polling с игнорированием старых сообщений
     bot.infinity_polling(skip_pending=True)
